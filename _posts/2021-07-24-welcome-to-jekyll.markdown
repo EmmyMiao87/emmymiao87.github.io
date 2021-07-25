@@ -7,19 +7,19 @@ categories: jekyll update
 
 > TPC-DS 中包含一个特殊的 Nested Query，虽然子查询的位置出现在 where 中，但其无法通过 Semi Join 改写实现。出于好奇，我查询了其他系统对这类子查询的实现方式，在此分享给大家。
 
-# 1. 背景
+# 背景
   SQL-99 允许 nested subqueries 出现在 query 的各个位置，包括 select ，where 等等。为了保证这些复杂的 query 可以被有效快速的执行，针对不同的 nested 位置，以及是否 correlated 来进行不同的 unnested 处理，从而提升查询效率。
   本文主要讲述的是一种出现在 where 子句中的 nested subqueries 的 unnesting 实现方式。
 
-# 2. 名词解释
+# 名词解释
 1. query: 查询，本文中主要指代 SQL 查询语句 
 2. nested subquery：嵌套子查询，指出现在 query 中的子查询，比如 where r.a in ( subquery)。
 3. correlated: 关联子查询，指的是子查询中带有和外层列相关的条件。
 4. unnested subquery：非嵌套子查询，通过合理的代数转换，将带嵌套子查询的 query 通过规划改写等方式解嵌套成，正常的非嵌套子查询的 query。
 5. disjunction：由 or 链接的两个谓词之间的关系就是 disjunction。比如 a.k1=1 or b.k1=1。
 
-# 3. Mark Join
-## 3.1 为什么会产生 Mark Join
+# Mark Join
+## 为什么会产生 Mark Join
   子查询中一类不寻常的由 **exists（not exists etc.)** 和 **unique, quantified comparisons** 产生的谓词子查询。简单说就是一个 query，他的where 条件既包含 exists 类的子查询，也包含量化普通谓词，并且其之间的关系还是 disjunction。例如：**exists 子句 + or + in predicate**
 
 {% highlight SQL %}
@@ -32,11 +32,11 @@ where exists (select * from orders
 
   看到 exists 通常我们会将其改写为 Semi Join 从而达到 unnested 的效果，但是这个查询不行，因为 exists 出现在一个 disjunction 中。也就是说，即使 lineitem 没有对应的 order， 也有可能被输出，因此我们不能使用 Semi Join。
 
-## 3.2 Mark Join 是什么
+## Mark Join 是什么
 上面的查询不能直接改写成为 Semi Join 的最主要原因就是：Semi Join 会提前过滤不满足 join 条件的行，使得哪些本可以满足 ```l_linenumber in (1,2,3)``` 的行被提前过滤，从而导致结果不正确。
  
 这时候 Mark Join 就产生了。Mark Join 也会进行正常的 join 匹配，但他不会直接过滤掉不满足 join 条件的行。而是通过产生一个新的列 marker 用于标记是否行是否满足 join 条件。Mark Join 的公式如下，其中 P 为 T1 表和 T2 表之间的 Join 条件，m 则为标记列。
-![MarkJoin公式.png](https://upload-images.jianshu.io/upload_images/26729147-471816835f8afa4f.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240)
+![MarkJoin公式.png](../img/)
 
 那么使用 Mark Join 后，刚才的查询就可以转换成一个正常的关系 Join Query 了。首先，括号中先对 linetime 表和 orders 表根据刚才的条件 o_orderkey = l_orderkey 进行类似 Semi Join 的操作，并将是否能匹配到的结果存储在 m 列中。最后在对 Mark Join 后的结果进行过滤，满足  l_linenumber 在 （1，2，3） 或者 m 列为 true 的都会输出。
 
@@ -58,11 +58,11 @@ where exists (select * from orders
 v7 = true or l_linenumber in (1,2,3)
 ```
 等价于
-```
+{% highlight SQL %}
 where exists (select * from orders 
                         where o_orderkey = l_orderkey)
               or l_linenumber in (1,2,3); 
-```
+{% endhighlight %}
 
 满足 v7 列为true 的或者满足 l_linenumber 在 1，2，3 这三个取值的行都可以被输出。其实就是将满足子查询条件的行，或者满足 in 表达式的行都会被保留。这样就等同于完成了原本 where 语句的过滤语义。 
 
@@ -88,7 +88,7 @@ where exists (select * from orders
   > 尽管我们知道 Null 这个取值在 distjunctive Where 子句中其实和 False 的含义完全一样。但是我们依旧需要保留 Null 取值，因为在其他语句中 Null 还是有意义的。比如 select k1 in (subquery) from table。
 
 下面我们进入完整的算法实现：
-```
+{% highlight JAVA %}
 for each r in R
     if r.a is NULL
         mark r as NULL
@@ -118,7 +118,7 @@ for each r in H
     if r is marked FALSE and hadNull
         mark r as NULL
     emit r,marker of r
-```
+{% endhighight %}
  R 是左孩子，S 是右孩子，join 的条件是 R.a = S.b。
 
 ###  step1：左孩子
