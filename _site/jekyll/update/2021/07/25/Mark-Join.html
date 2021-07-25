@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--meta property="og:image" content="https://vscode.github.com/assets/img/github-vscode-icon.svg"-->
+  <meta property="og:image" content="https://emmymiao87.github.io/img/icon.png">
+  <link rel="shortcut icon" href="/img/icon.png"><!-- Begin Jekyll SEO tag v2.7.1 -->
+<title>Mark Join — Unnesting Query | Ling’s Blog</title>
+<meta name="generator" content="Jekyll v3.9.0" />
+<meta property="og:title" content="Mark Join — Unnesting Query" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="TPC-DS 中包含一个特殊的 Nested Query，虽然子查询的位置出现在 where 中，但其无法通过 Semi Join 改写实现。出于好奇，我查询了其他系统对这类子查询的实现方式，在此分享给大家。" />
+<meta property="og:description" content="TPC-DS 中包含一个特殊的 Nested Query，虽然子查询的位置出现在 where 中，但其无法通过 Semi Join 改写实现。出于好奇，我查询了其他系统对这类子查询的实现方式，在此分享给大家。" />
+<link rel="canonical" href="http://localhost:4000/jekyll/update/2021/07/25/Mark-Join.html" />
+<meta property="og:url" content="http://localhost:4000/jekyll/update/2021/07/25/Mark-Join.html" />
+<meta property="og:site_name" content="Ling’s Blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2021-07-25T20:56:30+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Mark Join — Unnesting Query" />
+<script type="application/ld+json">
+{"url":"http://localhost:4000/jekyll/update/2021/07/25/Mark-Join.html","headline":"Mark Join — Unnesting Query","dateModified":"2021-07-25T20:56:30+08:00","datePublished":"2021-07-25T20:56:30+08:00","description":"TPC-DS 中包含一个特殊的 Nested Query，虽然子查询的位置出现在 where 中，但其无法通过 Semi Join 改写实现。出于好奇，我查询了其他系统对这类子查询的实现方式，在此分享给大家。","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/jekyll/update/2021/07/25/Mark-Join.html"},"@type":"BlogPosting","@context":"https://schema.org"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="http://localhost:4000/feed.xml" title="Ling's Blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">Ling&#39;s Blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">Mark Join — Unnesting Query</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2021-07-25T20:56:30+08:00" itemprop="datePublished">Jul 25, 2021
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <blockquote>
+  <p>TPC-DS 中包含一个特殊的 Nested Query，虽然子查询的位置出现在 where 中，但其无法通过 Semi Join 改写实现。出于好奇，我查询了其他系统对这类子查询的实现方式，在此分享给大家。</p>
+</blockquote>
+
+<h2 id="背景">背景</h2>
+
+<p>SQL-99 允许 nested subqueries 出现在 query 的各个位置，包括 select ，where 等等。为了保证这些复杂的 query 可以被有效快速的执行，针对不同的 nested 位置，以及是否 correlated 来进行不同的 unnested 处理，从而提升查询效率。
+  本文主要讲述的是一种出现在 where 子句中的 nested subqueries 的 unnesting 实现方式。</p>
+
+<h2 id="名词解释">名词解释</h2>
+
+<ol>
+  <li>query: 查询，本文中主要指代 SQL 查询语句</li>
+  <li>nested subquery：嵌套子查询，指出现在 query 中的子查询，比如 where r.a in ( subquery)。</li>
+  <li>correlated: 关联子查询，指的是子查询中带有和外层列相关的条件。</li>
+  <li>unnested subquery：非嵌套子查询，通过合理的代数转换，将带嵌套子查询的 query 通过规划改写等方式解嵌套成，正常的非嵌套子查询的 query。</li>
+  <li>disjunction：由 or 链接的两个谓词之间的关系就是 disjunction。比如 a.k1=1 or b.k1=1。</li>
+</ol>
+
+<h2 id="mark-join">Mark Join</h2>
+
+<h3 id="为什么会产生-mark-join">为什么会产生 Mark Join</h3>
+
+<p>子查询中一类不寻常的由 <strong>exists（not exists etc.)</strong> 和 <strong>unique, quantified comparisons</strong> 产生的谓词子查询。简单说就是一个 query，他的where 条件既包含 exists 类的子查询，也包含量化普通谓词，并且其之间的关系还是 disjunction。例如：<strong>exists 子句 + or + in predicate</strong></p>
+
+<figure class="highlight"><pre><code class="language-sql" data-lang="sql"><span class="k">select</span> <span class="n">l_orderkey</span> 
+<span class="k">from</span> <span class="n">lineitem</span> 
+<span class="k">where</span> <span class="k">exists</span> <span class="p">(</span><span class="k">select</span> <span class="o">*</span> <span class="k">from</span> <span class="n">orders</span> 
+                        <span class="k">where</span> <span class="n">o_orderkey</span> <span class="o">=</span> <span class="n">l_orderkey</span><span class="p">)</span>
+              <span class="k">or</span> <span class="n">l_linenumber</span> <span class="k">in</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">);</span></code></pre></figure>
+
+<p>看到 exists 通常我们会将其改写为 Semi Join 从而达到 unnested 的效果，但是这个查询不行，因为 exists 出现在一个 disjunction 中。也就是说，即使 lineitem 没有对应的 order， 也有可能被输出，因此我们不能使用 Semi Join。</p>
+
+<h3 id="mark-join-是什么">Mark Join 是什么</h3>
+
+<p>上面的查询不能直接改写成为 Semi Join 的最主要原因就是：Semi Join 会提前过滤不满足 join 条件的行，使得哪些本可以满足 <code class="language-plaintext highlighter-rouge">l_linenumber in (1,2,3)</code> 的行被提前过滤，从而导致结果不正确。</p>
+
+<p>这时候 Mark Join 就产生了。Mark Join 也会进行正常的 join 匹配，但他不会直接过滤掉不满足 join 条件的行。而是通过产生一个新的列 marker 用于标记是否行是否满足 join 条件。Mark Join 的公式如下，其中 P 为 T1 表和 T2 表之间的 Join 条件，m 则为标记列。
+<img src="/assets/MarkJoin公式.png" alt="MarkJoin公式.png" /></p>
+
+<p>那么使用 Mark Join 后，刚才的查询就可以转换成一个正常的关系 Join Query 了。首先，括号中先对 linetime 表和 orders 表根据刚才的条件 o_orderkey = l_orderkey 进行类似 Semi Join 的操作，并将是否能匹配到的结果存储在 m 列中。最后在对 Mark Join 后的结果进行过滤，满足  l_linenumber 在 （1，2，3） 或者 m 列为 true 的都会输出。</p>
+
+<h3 id="mark-join-是如何处理-nested-subquery-的">Mark Join 是如何处理 nested subquery 的</h3>
+<p>让我们来看一下上述 nested subquery 在使用了 mark join 后的 Query plan ：
+<img src="/assets/MarkJoinQueryPlan1.png" alt="MarkJoinQueryPlan1.png" /></p>
+
+<h4 id="step1mark-join-阶段">step1：mark join 阶段</h4>
+<p>自底向上看，首先是对 orders 和 lineitem 这两张表进行了 Mark Join。也就是说对右表 lineitem 表进行 mark 操作。
+<img src="/assets/MarkJoinQueryPlan2.png" alt="MarkJoinQueryPlan2.png" />
+点开详情可以看到，Mark Join 的 join 条件是 o_orderkey = l_orderkey，新生成的列 v7 列是 marker 列。这列的类型是 bool。当 tuple 满足 join 条件的时候，marker 列会设置为 True，如果不满足条件则设置为 False。（其实还有一种取值是 Null， 这个我们后面再说）。此时，经过 Mark Join 输出的 Tuple 类似于：
+<img src="/assets/MarkJoin.png" alt="MarkJoin.png" />
+ lineitem 中的行均被保留，只不过多了一个 v7 列，用于存储是否能匹配上 orders 表。当 l_orderkey = 1 时，由于 orders 表中也存在一个 o_orderkey =1 则匹配成功， v7 列取值 True。其他行由于匹配失败，所以 v7列取值 False。</p>
+
+<h4 id="step2selection-阶段">step2：selection 阶段</h4>
+<p><img src="/assets/Mark.png" alt="Mark.png" />
+经过 Mark Join 算子后，在往上看 Query Plan 进入 selection 阶段，对 Mark Join 输出的 tuple 进行过滤。条件为:</p>
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>v7 = true or l_linenumber in (1,2,3)
+</code></pre></div></div>
+<p>等价于</p>
+
+<figure class="highlight"><pre><code class="language-sql" data-lang="sql"><span class="k">where</span> <span class="k">exists</span> <span class="p">(</span><span class="k">select</span> <span class="o">*</span> <span class="k">from</span> <span class="n">orders</span> 
+                        <span class="k">where</span> <span class="n">o_orderkey</span> <span class="o">=</span> <span class="n">l_orderkey</span><span class="p">)</span>
+              <span class="k">or</span> <span class="n">l_linenumber</span> <span class="k">in</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">);</span> </code></pre></figure>
+
+<p>满足 v7 列为true 的或者满足 l_linenumber 在 1，2，3 这三个取值的行都可以被输出。其实就是将满足子查询条件的行，或者满足 in 表达式的行都会被保留。这样就等同于完成了原本 where 语句的过滤语义。</p>
+
+<p><img src="/assets/Selection.png" alt="Selection.png" />
+从表中我们可以看到，虽然第二行数据并不能满足 exists 条件，但是因为他的 linenumber 取值在 (1,2,3) 范围内，所以也可以被输出。</p>
+
+<h4 id="step3projection-阶段">step3：projection 阶段</h4>
+<p>经过 selection 算子，整个查询最后再进行一次 projection ，保留列 l_orderkey 就完成了。</p>
+
+<p>至此，Mark Join 算子完美的支持了，将一个 nested subquery 转换成了非嵌套的 query，同时还能保留 where 条件中的 disjunction 的逻辑。</p>
+
+<h2 id="实现算法">实现算法</h2>
+<p>我们现在已经知道了 Mark Join 的主要功能就是在 Join 的同时，产生一个新的 marker 列，并且将 Join 的结果存储在这个 marker 列中。那么下面就用算法具体解释一下 Mark Join 是如何产生这个新的列，并且如何给这个新的列取值的。
+  在真实场景中，实际上 Marker 列的取值有三种：</p>
+<ol>
+  <li>True：当 join 条件满足时</li>
+  <li>False：当 join 条件不满足时</li>
+  <li>Null：当 join 的列存在 Null 取值，且和其他列取值比较还不为 True 的时候。</li>
+</ol>
+
+<p>其中 True 和 False 都很好理解，Null 则是一种需要被特殊处理的情况。用 Left Mark Join 举例来说，当你的右表中存在 Null 取值时，尽管左表取值可能无法匹配右表中的任何取值，但是和 Null 匹配时，就会产生 Null 这种取值。
+<img src="/assets/NullMarkJoin.png" alt="NullMarkJoin.png" />
+上图中我们可以看到，虽然 R.a 取值为 2 时，无法匹配到 S.b 的值，但是由于 S.b 中存在取值 Null， 2 = Null 匹配出的结果为 Null ，所以 marker 列被标记为 Null。</p>
+
+<blockquote>
+  <p>尽管我们知道 Null 这个取值在 distjunctive Where 子句中其实和 False 的含义完全一样。但是我们依旧需要保留 Null 取值，因为在其他语句中 Null 还是有意义的。比如 select k1 in (subquery) from table。</p>
+</blockquote>
+
+<p>下面我们进入完整的算法实现：</p>
+
+<figure class="highlight"><pre><code class="language-java" data-lang="java"><span class="k">for</span> <span class="n">each</span> <span class="n">r</span> <span class="n">in</span> <span class="no">R</span>
+    <span class="k">if</span> <span class="n">r</span><span class="o">.</span><span class="na">a</span> <span class="n">is</span> <span class="no">NULL</span>
+        <span class="n">mark</span> <span class="n">r</span> <span class="n">as</span> <span class="no">NULL</span>
+        <span class="n">store</span> <span class="n">r</span> <span class="n">into</span> <span class="no">H</span><span class="o">[</span><span class="s">"null"</span><span class="o">]</span>
+    <span class="k">else</span>
+        <span class="n">mark</span> <span class="n">r</span> <span class="n">as</span> <span class="no">FALSE</span>
+        <span class="n">a</span><span class="err">'</span> <span class="o">=</span> <span class="n">r</span><span class="o">.</span><span class="na">a</span> <span class="n">cast</span> <span class="n">to</span> <span class="n">compare</span> <span class="n">type</span>
+        <span class="k">if</span> <span class="n">cast</span> <span class="n">was</span> <span class="n">exact</span>
+            <span class="n">store</span> <span class="n">r</span> <span class="n">into</span> <span class="no">H</span><span class="o">[</span><span class="n">a</span><span class="err">'</span><span class="o">]</span> 
+       <span class="k">else</span>
+            <span class="n">store</span> <span class="n">r</span> <span class="n">into</span> <span class="no">H</span><span class="o">[</span><span class="s">"extra"</span><span class="o">]</span>
+
+<span class="n">hadNull</span> <span class="o">=</span> <span class="kc">false</span>
+<span class="k">for</span> <span class="n">each</span> <span class="n">s</span> <span class="n">in</span> <span class="no">S</span>
+    <span class="k">if</span> <span class="n">s</span><span class="o">.</span><span class="na">b</span> <span class="n">is</span> <span class="no">NULL</span>
+        <span class="n">hadNull</span> <span class="o">=</span> <span class="kc">true</span>
+    <span class="k">else</span>
+        <span class="n">b</span><span class="err">'</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="na">b</span> <span class="n">cast</span> <span class="n">to</span> <span class="n">compare</span> <span class="n">type</span>
+        <span class="k">if</span> <span class="n">cast</span> <span class="n">was</span> <span class="n">exact</span>
+            <span class="k">for</span> <span class="n">each</span> <span class="n">r</span> <span class="n">in</span> <span class="no">H</span><span class="o">[</span><span class="n">b</span><span class="err">'</span><span class="o">]</span>
+                <span class="k">if</span> <span class="n">r</span><span class="o">.</span><span class="na">a</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="na">b</span>
+                    <span class="n">mark</span> <span class="n">r</span> <span class="n">as</span> <span class="no">TRUE</span>
+
+<span class="k">if</span> <span class="o">|</span><span class="no">S</span><span class="o">|</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">mark</span> <span class="n">all</span> <span class="n">entries</span> <span class="n">in</span> <span class="no">H</span><span class="o">[</span><span class="s">"null"</span><span class="o">]</span> <span class="n">as</span> <span class="no">FALSE</span>
+<span class="k">for</span> <span class="n">each</span> <span class="n">r</span> <span class="n">in</span> <span class="no">H</span>
+    <span class="k">if</span> <span class="n">r</span> <span class="n">is</span> <span class="n">marked</span> <span class="no">FALSE</span> <span class="n">and</span> <span class="n">hadNull</span>
+        <span class="n">mark</span> <span class="n">r</span> <span class="n">as</span> <span class="no">NULL</span>
+    <span class="n">emit</span> <span class="n">r</span><span class="o">,</span><span class="n">marker</span> <span class="n">of</span> <span class="n">r</span></code></pre></figure>
+
+<p>R 是左孩子，S 是右孩子，join 的条件是 R.a = S.b。</p>
+
+<h3 id="step1左孩子">step1：左孩子</h3>
+<p><code class="language-plaintext highlighter-rouge">for each r in R</code>，先处理左孩子，如果左孩子取值为 Null，此时无论右孩子取值为什么，他均为 Null，所以标记 marker 列为 Null。并且用 H[“null”] 数组将这些取值为 Null 的行存储起来。如果左孩子取值不为 Null，则先默认将 marker 都标记为 False，待后面进行处理，并存储在 H[a’] 或者 H[“extra”] 中。</p>
+
+<h3 id="step2右孩子">step2：右孩子</h3>
+<p><code class="language-plaintext highlighter-rouge">for each s in S</code>，处理右孩子，当右孩子取值存在 Null 的时候，则进行 hadNull 标记。由于右孩子如果存在 Null 则所有无法 Match 上的 marker 取值都需要重新标记为 Null，所以这里记录一下以便后面进行处理。如果右孩子取值不为 Null ，则看他是否能满足 r.a = s.b 的条件，满足则将 marker 标记为 True。</p>
+
+<p>step 2 完成后会有三种情况</p>
+<ol>
+  <li>满足 r.a = s.b 条件的列被直接标记为 True，</li>
+  <li>Null 列未标记，</li>
+  <li>其他列则标记为 False。</li>
+</ol>
+
+<h3 id="step3调整-null-取值">step3：调整 Null 取值</h3>
+<p>这时候我们就需要考虑左右值为 Null 的情况，并将一些错误的 False 修改为 null。</p>
+
+<ul>
+  <li>
+    <p>比如当右孩子为空集时 <code class="language-plaintext highlighter-rouge">if |S| = 0</code>，则左孩子所有的 Null 列直接被标记为 False。这时候左孩子的取值实际只有一种 False。</p>
+  </li>
+  <li>
+    <p>当右孩子存在 Null 值，且左孩子被标记为 False。<code class="language-plaintext highlighter-rouge">if r is marked FALSE and hadNull</code> 则需要把这些取值为 False 的 marker 改为 Null。也就是说，当右孩子存在 Null 值时，marker 值要么是 True 要么是 Null。</p>
+  </li>
+</ul>
+
+<h3 id="step4输出">step4：输出</h3>
+<p>最后再把 r 行和 marker 列一起输出即可。</p>
+
+<h2 id="一些细节">一些细节</h2>
+<p>Hyper 的论文中，并没有描述 Mark Join 的物理实现，比如左表和右表进行 mark join 的时候是否也是使用的Hash Table。这里根据规划中的 RightMarkJoin：Hash 可以猜测，exists 等值的 Join 应该是使用的 Hash Table。也就是说， Mark Join 算子在实现的时候也是通过 Hash Table 去进行 join 条件的判断的。</p>
+
+<p>Mark Join 还分为 Left Mark Join 和 Right Mark Join，这两者的本质区别是，mark 左表还是 mark 右表。</p>
+
+<h2 id="其他用法">其他用法</h2>
+<p>Mark Join 其实除了 disjunctive where 子句这种场景，还有很多其他的使用场景。 比如 select 语句中的子查询。</p>
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>select Title, ECTS = any (select ECTS from Courses c2
+                          where Lecturer = 123) someEqual
+from Courses c1
+</code></pre></div></div>
+<p>这个语句就可以直接改写成下面的 mark join：
+<img src="/assets/markjoin公式2.png" alt="markjoin公式2.png" />
+  取C2中 Lecturer = 123 和 C1 进行 Mark Join 条件为 c1.ETCS = c2. ETCS 并且将结果存储在 someEqual 列中。someEqual 列的取值有三种，True，False 和 Null。</p>
+
+<blockquote>
+  <p>至此，Mark Join 的介绍完毕。但实际上解决这类子查询的方式并不是只有 Mark Join 这一种，Greemplum 就使用 outer join 的方式解决了这类查询（并且规避了 Join 膨胀的问题）其不同系统实现的对比会在之后的文章中讨论。</p>
+</blockquote>
+
+  </div><a class="u-url" href="/jekyll/update/2021/07/25/Mark-Join.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">Ling&#39;s Blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">Ling&#39;s Blog</li><li><a class="u-email" href="mailto:emmymiao87@gmail.com">emmymiao87@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/emmymiao"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">emmymiao</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>No Description currently</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
