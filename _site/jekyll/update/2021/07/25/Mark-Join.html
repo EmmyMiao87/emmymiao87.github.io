@@ -87,25 +87,34 @@
 
 <p>上面的查询不能直接改写成为 Semi Join 的最主要原因就是：Semi Join 会提前过滤不满足 join 条件的行，使得哪些本可以满足 <code class="language-plaintext highlighter-rouge">l_linenumber in (1,2,3)</code> 的行被提前过滤，从而导致结果不正确。</p>
 
-<p>这时候 Mark Join 就产生了。Mark Join 也会进行正常的 join 匹配，但他不会直接过滤掉不满足 join 条件的行。而是通过产生一个新的列 marker 用于标记是否行是否满足 join 条件。Mark Join 的公式如下，其中 P 为 T1 表和 T2 表之间的 Join 条件，m 则为标记列。
-<img src="/assets/MarkJoin公式.png" alt="MarkJoin公式.png" /></p>
+<p>这时候 Mark Join 就产生了。Mark Join 也会进行正常的 join 匹配，但他不会直接过滤掉不满足 join 条件的行。而是通过产生一个新的列 marker 用于标记是否行是否满足 join 条件。Mark Join 的公式如下，其中 P 为 T1 表和 T2 表之间的 Join 条件，m 则为标记列。</p>
+
+<p><img src="/assets/MarkJoin公式.png" alt="MarkJoin公式.png" /></p>
 
 <p>那么使用 Mark Join 后，刚才的查询就可以转换成一个正常的关系 Join Query 了。首先，括号中先对 linetime 表和 orders 表根据刚才的条件 o_orderkey = l_orderkey 进行类似 Semi Join 的操作，并将是否能匹配到的结果存储在 m 列中。最后在对 Mark Join 后的结果进行过滤，满足  l_linenumber 在 （1，2，3） 或者 m 列为 true 的都会输出。</p>
 
 <h3 id="mark-join-是如何处理-nested-subquery-的">Mark Join 是如何处理 nested subquery 的</h3>
-<p>让我们来看一下上述 nested subquery 在使用了 mark join 后的 Query plan ：
-<img src="/assets/MarkJoinQueryPlan1.png" alt="MarkJoinQueryPlan1.png" /></p>
+<p>让我们来看一下上述 nested subquery 在使用了 mark join 后的 Query plan ：</p>
+
+<p><img src="/assets/MarkJoinQueryPlan1.png" alt="MarkJoinQueryPlan1.png" /></p>
 
 <h4 id="step1mark-join-阶段">step1：mark join 阶段</h4>
-<p>自底向上看，首先是对 orders 和 lineitem 这两张表进行了 Mark Join。也就是说对右表 lineitem 表进行 mark 操作。
-<img src="/assets/MarkJoinQueryPlan2.png" alt="MarkJoinQueryPlan2.png" />
-点开详情可以看到，Mark Join 的 join 条件是 o_orderkey = l_orderkey，新生成的列 v7 列是 marker 列。这列的类型是 bool。当 tuple 满足 join 条件的时候，marker 列会设置为 True，如果不满足条件则设置为 False。（其实还有一种取值是 Null， 这个我们后面再说）。此时，经过 Mark Join 输出的 Tuple 类似于：
-<img src="/assets/MarkJoin.png" alt="MarkJoin.png" />
- lineitem 中的行均被保留，只不过多了一个 v7 列，用于存储是否能匹配上 orders 表。当 l_orderkey = 1 时，由于 orders 表中也存在一个 o_orderkey =1 则匹配成功， v7 列取值 True。其他行由于匹配失败，所以 v7列取值 False。</p>
+<p>自底向上看，首先是对 orders 和 lineitem 这两张表进行了 Mark Join。也就是说对右表 lineitem 表进行 mark 操作。</p>
+
+<p><img src="/assets/MarkJoinQueryPlan2.png" alt="MarkJoinQueryPlan2.png" /></p>
+
+<p>点开详情可以看到，Mark Join 的 join 条件是 o_orderkey = l_orderkey，新生成的列 v7 列是 marker 列。这列的类型是 bool。当 tuple 满足 join 条件的时候，marker 列会设置为 True，如果不满足条件则设置为 False。（其实还有一种取值是 Null， 这个我们后面再说）。此时，经过 Mark Join 输出的 Tuple 类似于：</p>
+
+<p><img src="/assets/MarkJoin.png" alt="MarkJoin.png" /></p>
+
+<p>lineitem 中的行均被保留，只不过多了一个 v7 列，用于存储是否能匹配上 orders 表。当 l_orderkey = 1 时，由于 orders 表中也存在一个 o_orderkey =1 则匹配成功， v7 列取值 True。其他行由于匹配失败，所以 v7列取值 False。</p>
 
 <h4 id="step2selection-阶段">step2：selection 阶段</h4>
-<p><img src="/assets/Mark.png" alt="Mark.png" />
-经过 Mark Join 算子后，在往上看 Query Plan 进入 selection 阶段，对 Mark Join 输出的 tuple 进行过滤。条件为:</p>
+
+<p><img src="/assets/Mark.png" alt="Mark.png" /></p>
+
+<p>经过 Mark Join 算子后，在往上看 Query Plan 进入 selection 阶段，对 Mark Join 输出的 tuple 进行过滤。条件为:</p>
+
 <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>v7 = true or l_linenumber in (1,2,3)
 </code></pre></div></div>
 <p>等价于</p>
@@ -116,8 +125,9 @@
 
 <p>满足 v7 列为true 的或者满足 l_linenumber 在 1，2，3 这三个取值的行都可以被输出。其实就是将满足子查询条件的行，或者满足 in 表达式的行都会被保留。这样就等同于完成了原本 where 语句的过滤语义。</p>
 
-<p><img src="/assets/Selection.png" alt="Selection.png" />
-从表中我们可以看到，虽然第二行数据并不能满足 exists 条件，但是因为他的 linenumber 取值在 (1,2,3) 范围内，所以也可以被输出。</p>
+<p><img src="/assets/Selection.png" alt="Selection.png" /></p>
+
+<p>从表中我们可以看到，虽然第二行数据并不能满足 exists 条件，但是因为他的 linenumber 取值在 (1,2,3) 范围内，所以也可以被输出。</p>
 
 <h4 id="step3projection-阶段">step3：projection 阶段</h4>
 <p>经过 selection 算子，整个查询最后再进行一次 projection ，保留列 l_orderkey 就完成了。</p>
@@ -133,9 +143,11 @@
   <li>Null：当 join 的列存在 Null 取值，且和其他列取值比较还不为 True 的时候。</li>
 </ol>
 
-<p>其中 True 和 False 都很好理解，Null 则是一种需要被特殊处理的情况。用 Left Mark Join 举例来说，当你的右表中存在 Null 取值时，尽管左表取值可能无法匹配右表中的任何取值，但是和 Null 匹配时，就会产生 Null 这种取值。
-<img src="/assets/NullMarkJoin.png" alt="NullMarkJoin.png" />
-上图中我们可以看到，虽然 R.a 取值为 2 时，无法匹配到 S.b 的值，但是由于 S.b 中存在取值 Null， 2 = Null 匹配出的结果为 Null ，所以 marker 列被标记为 Null。</p>
+<p>其中 True 和 False 都很好理解，Null 则是一种需要被特殊处理的情况。用 Left Mark Join 举例来说，当你的右表中存在 Null 取值时，尽管左表取值可能无法匹配右表中的任何取值，但是和 Null 匹配时，就会产生 Null 这种取值。</p>
+
+<p><img src="/assets/NullMarkJoin.png" alt="NullMarkJoin.png" /></p>
+
+<p>上图中我们可以看到，虽然 R.a 取值为 2 时，无法匹配到 S.b 的值，但是由于 S.b 中存在取值 Null， 2 = Null 匹配出的结果为 Null ，所以 marker 列被标记为 Null。</p>
 
 <blockquote>
   <p>尽管我们知道 Null 这个取值在 distjunctive Where 子句中其实和 False 的含义完全一样。但是我们依旧需要保留 Null 取值，因为在其他语句中 Null 还是有意义的。比如 select k1 in (subquery) from table。</p>
@@ -214,9 +226,11 @@
                           where Lecturer = 123) someEqual
 from Courses c1
 </code></pre></div></div>
-<p>这个语句就可以直接改写成下面的 mark join：
-<img src="/assets/markjoin公式2.png" alt="markjoin公式2.png" />
-  取C2中 Lecturer = 123 和 C1 进行 Mark Join 条件为 c1.ETCS = c2. ETCS 并且将结果存储在 someEqual 列中。someEqual 列的取值有三种，True，False 和 Null。</p>
+<p>这个语句就可以直接改写成下面的 mark join：</p>
+
+<p><img src="/assets/markjoin公式2.png" alt="markjoin公式2.png" /></p>
+
+<p>取C2中 Lecturer = 123 和 C1 进行 Mark Join 条件为 c1.ETCS = c2. ETCS 并且将结果存储在 someEqual 列中。someEqual 列的取值有三种，True，False 和 Null。</p>
 
 <blockquote>
   <p>至此，Mark Join 的介绍完毕。但实际上解决这类子查询的方式并不是只有 Mark Join 这一种，Greemplum 就使用 outer join 的方式解决了这类查询（并且规避了 Join 膨胀的问题）其不同系统实现的对比会在之后的文章中讨论。</p>
@@ -243,7 +257,7 @@ from Courses c1
 </div>
 
       <div class="footer-col footer-col-3">
-        <p>No Description currently</p>
+        <p>copyright by EmmyMiao</p>
       </div>
     </div>
 

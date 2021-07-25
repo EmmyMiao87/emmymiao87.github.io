@@ -21,7 +21,7 @@
 title: Ling's Blog
 email: emmymiao87@gmail.com
 description: >- # this means to ignore newlines until "baseurl:"
-  No Description currently
+  copyright by EmmyMiao
 baseurl: "" # the subpath of your site, e.g. /blog
 url: https://emmymiao87.github.io # the base hostname & protocol for your site, e.g. http://example.com
 image : ../img/icon.png

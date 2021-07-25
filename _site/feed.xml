@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="3.9.0">Jekyll</generator><link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" /><link href="http://localhost:4000/" rel="alternate" type="text/html" /><updated>2021-07-25T21:37:12+08:00</updated><id>http://localhost:4000/feed.xml</id><title type="html">Ling’s Blog</title><subtitle>No Description currently</subtitle><entry><title type="html">Mark Join — Unnesting Query</title><link href="http://localhost:4000/jekyll/update/2021/07/25/Mark-Join.html" rel="alternate" type="text/html" title="Mark Join — Unnesting Query" /><published>2021-07-25T20:56:30+08:00</published><updated>2021-07-25T20:56:30+08:00</updated><id>http://localhost:4000/jekyll/update/2021/07/25/Mark-Join</id><content type="html" xml:base="http://localhost:4000/jekyll/update/2021/07/25/Mark-Join.html">&lt;blockquote&gt;
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="3.9.0">Jekyll</generator><link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" /><link href="http://localhost:4000/" rel="alternate" type="text/html" /><updated>2021-07-25T21:49:00+08:00</updated><id>http://localhost:4000/feed.xml</id><title type="html">Ling’s Blog</title><subtitle>copyright by EmmyMiao</subtitle><entry><title type="html">Mark Join — Unnesting Query</title><link href="http://localhost:4000/jekyll/update/2021/07/25/Mark-Join.html" rel="alternate" type="text/html" title="Mark Join — Unnesting Query" /><published>2021-07-25T20:56:30+08:00</published><updated>2021-07-25T20:56:30+08:00</updated><id>http://localhost:4000/jekyll/update/2021/07/25/Mark-Join</id><content type="html" xml:base="http://localhost:4000/jekyll/update/2021/07/25/Mark-Join.html">&lt;blockquote&gt;
   &lt;p&gt;TPC-DS 中包含一个特殊的 Nested Query，虽然子查询的位置出现在 where 中，但其无法通过 Semi Join 改写实现。出于好奇，我查询了其他系统对这类子查询的实现方式，在此分享给大家。&lt;/p&gt;
 &lt;/blockquote&gt;
 
@@ -35,25 +35,34 @@
 
 &lt;p&gt;上面的查询不能直接改写成为 Semi Join 的最主要原因就是：Semi Join 会提前过滤不满足 join 条件的行，使得哪些本可以满足 &lt;code class=&quot;language-plaintext highlighter-rouge&quot;&gt;l_linenumber in (1,2,3)&lt;/code&gt; 的行被提前过滤，从而导致结果不正确。&lt;/p&gt;
 
-&lt;p&gt;这时候 Mark Join 就产生了。Mark Join 也会进行正常的 join 匹配，但他不会直接过滤掉不满足 join 条件的行。而是通过产生一个新的列 marker 用于标记是否行是否满足 join 条件。Mark Join 的公式如下，其中 P 为 T1 表和 T2 表之间的 Join 条件，m 则为标记列。
-&lt;img src=&quot;/assets/MarkJoin公式.png&quot; alt=&quot;MarkJoin公式.png&quot; /&gt;&lt;/p&gt;
+&lt;p&gt;这时候 Mark Join 就产生了。Mark Join 也会进行正常的 join 匹配，但他不会直接过滤掉不满足 join 条件的行。而是通过产生一个新的列 marker 用于标记是否行是否满足 join 条件。Mark Join 的公式如下，其中 P 为 T1 表和 T2 表之间的 Join 条件，m 则为标记列。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/MarkJoin公式.png&quot; alt=&quot;MarkJoin公式.png&quot; /&gt;&lt;/p&gt;
 
 &lt;p&gt;那么使用 Mark Join 后，刚才的查询就可以转换成一个正常的关系 Join Query 了。首先，括号中先对 linetime 表和 orders 表根据刚才的条件 o_orderkey = l_orderkey 进行类似 Semi Join 的操作，并将是否能匹配到的结果存储在 m 列中。最后在对 Mark Join 后的结果进行过滤，满足  l_linenumber 在 （1，2，3） 或者 m 列为 true 的都会输出。&lt;/p&gt;
 
 &lt;h3 id=&quot;mark-join-是如何处理-nested-subquery-的&quot;&gt;Mark Join 是如何处理 nested subquery 的&lt;/h3&gt;
-&lt;p&gt;让我们来看一下上述 nested subquery 在使用了 mark join 后的 Query plan ：
-&lt;img src=&quot;/assets/MarkJoinQueryPlan1.png&quot; alt=&quot;MarkJoinQueryPlan1.png&quot; /&gt;&lt;/p&gt;
+&lt;p&gt;让我们来看一下上述 nested subquery 在使用了 mark join 后的 Query plan ：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/MarkJoinQueryPlan1.png&quot; alt=&quot;MarkJoinQueryPlan1.png&quot; /&gt;&lt;/p&gt;
 
 &lt;h4 id=&quot;step1mark-join-阶段&quot;&gt;step1：mark join 阶段&lt;/h4&gt;
-&lt;p&gt;自底向上看，首先是对 orders 和 lineitem 这两张表进行了 Mark Join。也就是说对右表 lineitem 表进行 mark 操作。
-&lt;img src=&quot;/assets/MarkJoinQueryPlan2.png&quot; alt=&quot;MarkJoinQueryPlan2.png&quot; /&gt;
-点开详情可以看到，Mark Join 的 join 条件是 o_orderkey = l_orderkey，新生成的列 v7 列是 marker 列。这列的类型是 bool。当 tuple 满足 join 条件的时候，marker 列会设置为 True，如果不满足条件则设置为 False。（其实还有一种取值是 Null， 这个我们后面再说）。此时，经过 Mark Join 输出的 Tuple 类似于：
-&lt;img src=&quot;/assets/MarkJoin.png&quot; alt=&quot;MarkJoin.png&quot; /&gt;
- lineitem 中的行均被保留，只不过多了一个 v7 列，用于存储是否能匹配上 orders 表。当 l_orderkey = 1 时，由于 orders 表中也存在一个 o_orderkey =1 则匹配成功， v7 列取值 True。其他行由于匹配失败，所以 v7列取值 False。&lt;/p&gt;
+&lt;p&gt;自底向上看，首先是对 orders 和 lineitem 这两张表进行了 Mark Join。也就是说对右表 lineitem 表进行 mark 操作。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/MarkJoinQueryPlan2.png&quot; alt=&quot;MarkJoinQueryPlan2.png&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;点开详情可以看到，Mark Join 的 join 条件是 o_orderkey = l_orderkey，新生成的列 v7 列是 marker 列。这列的类型是 bool。当 tuple 满足 join 条件的时候，marker 列会设置为 True，如果不满足条件则设置为 False。（其实还有一种取值是 Null， 这个我们后面再说）。此时，经过 Mark Join 输出的 Tuple 类似于：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/MarkJoin.png&quot; alt=&quot;MarkJoin.png&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;lineitem 中的行均被保留，只不过多了一个 v7 列，用于存储是否能匹配上 orders 表。当 l_orderkey = 1 时，由于 orders 表中也存在一个 o_orderkey =1 则匹配成功， v7 列取值 True。其他行由于匹配失败，所以 v7列取值 False。&lt;/p&gt;
 
 &lt;h4 id=&quot;step2selection-阶段&quot;&gt;step2：selection 阶段&lt;/h4&gt;
-&lt;p&gt;&lt;img src=&quot;/assets/Mark.png&quot; alt=&quot;Mark.png&quot; /&gt;
-经过 Mark Join 算子后，在往上看 Query Plan 进入 selection 阶段，对 Mark Join 输出的 tuple 进行过滤。条件为:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/Mark.png&quot; alt=&quot;Mark.png&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;经过 Mark Join 算子后，在往上看 Query Plan 进入 selection 阶段，对 Mark Join 输出的 tuple 进行过滤。条件为:&lt;/p&gt;
+
 &lt;div class=&quot;language-plaintext highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;v7 = true or l_linenumber in (1,2,3)
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
 &lt;p&gt;等价于&lt;/p&gt;
@@ -64,8 +73,9 @@
 
 &lt;p&gt;满足 v7 列为true 的或者满足 l_linenumber 在 1，2，3 这三个取值的行都可以被输出。其实就是将满足子查询条件的行，或者满足 in 表达式的行都会被保留。这样就等同于完成了原本 where 语句的过滤语义。&lt;/p&gt;
 
-&lt;p&gt;&lt;img src=&quot;/assets/Selection.png&quot; alt=&quot;Selection.png&quot; /&gt;
-从表中我们可以看到，虽然第二行数据并不能满足 exists 条件，但是因为他的 linenumber 取值在 (1,2,3) 范围内，所以也可以被输出。&lt;/p&gt;
+&lt;p&gt;&lt;img src=&quot;/assets/Selection.png&quot; alt=&quot;Selection.png&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;从表中我们可以看到，虽然第二行数据并不能满足 exists 条件，但是因为他的 linenumber 取值在 (1,2,3) 范围内，所以也可以被输出。&lt;/p&gt;
 
 &lt;h4 id=&quot;step3projection-阶段&quot;&gt;step3：projection 阶段&lt;/h4&gt;
 &lt;p&gt;经过 selection 算子，整个查询最后再进行一次 projection ，保留列 l_orderkey 就完成了。&lt;/p&gt;
@@ -81,9 +91,11 @@
   &lt;li&gt;Null：当 join 的列存在 Null 取值，且和其他列取值比较还不为 True 的时候。&lt;/li&gt;
 &lt;/ol&gt;
 
-&lt;p&gt;其中 True 和 False 都很好理解，Null 则是一种需要被特殊处理的情况。用 Left Mark Join 举例来说，当你的右表中存在 Null 取值时，尽管左表取值可能无法匹配右表中的任何取值，但是和 Null 匹配时，就会产生 Null 这种取值。
-&lt;img src=&quot;/assets/NullMarkJoin.png&quot; alt=&quot;NullMarkJoin.png&quot; /&gt;
-上图中我们可以看到，虽然 R.a 取值为 2 时，无法匹配到 S.b 的值，但是由于 S.b 中存在取值 Null， 2 = Null 匹配出的结果为 Null ，所以 marker 列被标记为 Null。&lt;/p&gt;
+&lt;p&gt;其中 True 和 False 都很好理解，Null 则是一种需要被特殊处理的情况。用 Left Mark Join 举例来说，当你的右表中存在 Null 取值时，尽管左表取值可能无法匹配右表中的任何取值，但是和 Null 匹配时，就会产生 Null 这种取值。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/NullMarkJoin.png&quot; alt=&quot;NullMarkJoin.png&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;上图中我们可以看到，虽然 R.a 取值为 2 时，无法匹配到 S.b 的值，但是由于 S.b 中存在取值 Null， 2 = Null 匹配出的结果为 Null ，所以 marker 列被标记为 Null。&lt;/p&gt;
 
 &lt;blockquote&gt;
   &lt;p&gt;尽管我们知道 Null 这个取值在 distjunctive Where 子句中其实和 False 的含义完全一样。但是我们依旧需要保留 Null 取值，因为在其他语句中 Null 还是有意义的。比如 select k1 in (subquery) from table。&lt;/p&gt;
@@ -162,9 +174,11 @@
                           where Lecturer = 123) someEqual
 from Courses c1
 &lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
-&lt;p&gt;这个语句就可以直接改写成下面的 mark join：
-&lt;img src=&quot;/assets/markjoin公式2.png&quot; alt=&quot;markjoin公式2.png&quot; /&gt;
-  取C2中 Lecturer = 123 和 C1 进行 Mark Join 条件为 c1.ETCS = c2. ETCS 并且将结果存储在 someEqual 列中。someEqual 列的取值有三种，True，False 和 Null。&lt;/p&gt;
+&lt;p&gt;这个语句就可以直接改写成下面的 mark join：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/assets/markjoin公式2.png&quot; alt=&quot;markjoin公式2.png&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;取C2中 Lecturer = 123 和 C1 进行 Mark Join 条件为 c1.ETCS = c2. ETCS 并且将结果存储在 someEqual 列中。someEqual 列的取值有三种，True，False 和 Null。&lt;/p&gt;
 
 &lt;blockquote&gt;
   &lt;p&gt;至此，Mark Join 的介绍完毕。但实际上解决这类子查询的方式并不是只有 Mark Join 这一种，Greemplum 就使用 outer join 的方式解决了这类查询（并且规避了 Join 膨胀的问题）其不同系统实现的对比会在之后的文章中讨论。&lt;/p&gt;
