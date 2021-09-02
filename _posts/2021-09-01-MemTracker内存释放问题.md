@@ -5,7 +5,7 @@ date:   2021-09-01 20:56:30 +0800
 categories: jekyll update
 ---
 
-## Mem Tracker 析构失败——内存没被释放
+## 现象：Mem Tracker 析构失败
 
   在开发 Doris 并发导出查询结果集功能的时候，意外遇到一个 be 宕机的情况。从 be 的 ```log/be.out``` 日志中看到，是一个与 MemTracker 对象析构有关的问题。
 
@@ -56,7 +56,7 @@ Program terminated with signal SIGABRT, Aborted.
   结合代码具体行我发现，是析构 MemTracker 的时候有内存 consumption 不为 0，导致的析构错误。
 ![mem_tracker_code.png](/assets/mem_tracker_code.png)
 
-## 2. 精确定位是内存没被释放的问题
+## 2. 精确定位——内存没被释放
 
   通过 gdb 命令进入具体的层级，确认 consumption 的值。
 
@@ -73,7 +73,7 @@ $3 = {<doris::RuntimeProfile::Counter> = {_vptr.Counter = 0x41b2cc8 <vtable for 
 
   consumption = 12288 = 4096 + 4096 + 4096。这明显是一个内存申请后，未释放导致的问题。
 
-  *这里需要注意一点的是，如果栈中 consumption 的值虽然 !=0 但是是一个负数，或者一个异常值的话，那就不一定是单纯的内存未释放的问题了。*
+> 这里需要注意一点的是，如果栈中 consumption 的值虽然 !=0 但是是一个负数，或者一个异常值的话，那就不一定是单纯的内存未释放的问题了。
 
 ## 3. 定位是哪个 MemTracker 发生的问题
 
