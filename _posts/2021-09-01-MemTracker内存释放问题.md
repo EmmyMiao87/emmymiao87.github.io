@@ -1,15 +1,15 @@
 ---
 layout: post
-title:  "排查 Doris Mem Tracker 析构失败问题 "
+title:  "排查 Doris Mem Tracker 内存释放问题 "
 date:   2021-09-01 20:56:30 +0800
 categories: jekyll update
 ---
 
-## Mem Tracker 内存释放
+## Mem Tracker 析构失败——内存没被释放
 
   在开发 Doris 并发导出查询结果集功能的时候，意外遇到一个 be 宕机的情况。从 be 的 ```log/be.out``` 日志中看到，是一个与 MemTracker 对象析构有关的问题。
 
-```
+```bash
 start time: 2021年 08月 31日 星期二 14:13:10 CST
 *** Check failure stack trace: ***
     @          0x2efd7cd  google::LogMessage::Fail()
@@ -31,13 +31,13 @@ start time: 2021年 08月 31日 星期二 14:13:10 CST
 
   由于 Doris 默认编译会开启 O3 优化，如果要通过 core 文件精确定位到错误的位置，首先需要开启 DEBUG 编译。
 
-```
+```bash
 BUILD_TYPE=debug ./build.sh --be
 ```
 
   这时候生成的 core 文件通过 gdb 工具就可以精确定位到具体出错的位置了。通过下面命令，打开 core 栈发现是 ```mem_tracker.cpp:270``` 这行出现的错误。
 
-```
+```bash
 gdb lib/palo_be core.12344
 Program terminated with signal SIGABRT, Aborted.
 #0  __GI_raise (sig=sig@entry=6) at ../sysdeps/unix/sysv/linux/raise.c:50
@@ -60,7 +60,7 @@ Program terminated with signal SIGABRT, Aborted.
 
   通过 gdb 命令进入具体的层级，确认 consumption 的值。
 
-```
+```bash
 (gdb) frame 7
 #7  0x000000000220503c in doris::MemTracker::~MemTracker (this=0xc347540, __in_chrg=<optimized out>) at ../src/runtime/mem_tracker.cpp:270
 270	        DCHECK(consumption() == 0) << "Memory tracker " << debug_string()
@@ -81,7 +81,7 @@ $3 = {<doris::RuntimeProfile::Counter> = {_vptr.Counter = 0x41b2cc8 <vtable for 
 
   core 栈中可以看出 ```DataStreamSender::~DataStreamSender ``` 析构的时候会析构一个  ```shared_ptr<MemTracker>``` 。对比 Doris 的代码发现：
 
-```
+```c++
 class DataStreamSender : public DataSink {
 protected:
     std::shared_ptr<MemTracker> _mem_tracker;
@@ -102,7 +102,7 @@ protected:
 
   从代码中可以看到，唯一使用了这个 ```_mem_tracker``` 的对象就是 ResultFileSink 的 ```_output_batch```。
 
-```
+```c++
 Status ResultFileSink::prepare(RuntimeState* state) {
     ...
     _output_batch = new RowBatch(_output_row_descriptor, 1024, _mem_tracker.get());
@@ -110,7 +110,7 @@ Status ResultFileSink::prepare(RuntimeState* state) {
 }
 ```
   而且在构造 ```_output_batch``` 中的内容时，确实申请了内存用于存储 batch 中的数据。
-```
+```c++
 Status FileResultWriter::_fill_result_batch() {
     Tuple* tuple = (Tuple*)_output_batch->tuple_data_pool()->allocate(tuple_desc->byte_size());
 }
@@ -122,7 +122,7 @@ Status FileResultWriter::_fill_result_batch() {
 
   有了怀疑的对象，接下来就是**找到释放内存的方式**并且修复他。```_output_batch``` 他作为一个 RowBatch 对象，唯一会释放内存的地方就是析构的时候。
 
-```
+```c++
 RowBatch::~RowBatch() {
     clear();
 }
@@ -136,7 +136,7 @@ void RowBatch::clear() {
 
   那么问题就从**释放内存转化为析构RowBatch**。```_output_batch``` 作为一个指针他需要在所属类中手动 delete 才会被析构。**所以需要在 ResultFileSink 析构的时候主动 delete 即可解决问题。**
 
-```
+```c++
 ResultFileSink:~ResultFileSink() {
     delete _output_batch;
 }
