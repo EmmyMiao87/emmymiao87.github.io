@@ -157,8 +157,8 @@ ResultFileSink:~ResultFileSink() {
 ## 附录
 
   gdb 调试中的一些简单用法：
-1. 打开 core 栈：gdb lib/palo_be core.xxx
+1. 打开 core 栈：gdb lib/palo\_be core.xxx
 2. 进入其中一层：frame 1
-3. 打印值：p *((类型*)地址)
+3. 打印值：p \*((类型\*)地址)
 4. 调试相关：b 断点，r 从头运行，c continue，n 单步，s step in
 
